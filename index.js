@@ -19,70 +19,154 @@ function handleOcppMessage(ws, raw) {
 
   try {
     msg = JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    console.warn('Mensagem inválida (JSON):', raw);
+    return;
+  }
+
+  // OCPP 1.6 sempre é array
+  if (!Array.isArray(msg) || msg.length < 2) {
+    console.warn('Formato OCPP inválido:', msg);
     return;
   }
 
   const [type, uid, action, payload] = msg;
 
-  if (type !== 2) return;
+  switch (type) {
 
-  switch (action) {
-    case 'BootNotification':
-      chargers.set(ws, { status: 'Available' });
+    /* =========================
+       CALL (charger → server)
+       ========================= */
+    case 2: {
+      if (typeof action !== 'string' || typeof payload !== 'object') {
+        sendCallError(ws, uid, 'FormationViolation', 'CALL inválido');
+        return;
+      }
 
-      ws.send(JSON.stringify([
-        3,
-        uid,
-        {
-          status: 'Accepted',
-          interval: 300,
-          currentTime: new Date().toISOString()
+      switch (action) {
+
+        /* 🔌 BOOT */
+        case 'BootNotification':
+          chargers.set(ws, {
+            status: 'Available',
+            model: payload.chargePointModel,
+            vendor: payload.chargePointVendor
+          });
+
+          sendCallResult(ws, uid, {
+            status: 'Accepted',
+            interval: 300,
+            currentTime: new Date().toISOString()
+          });
+          break;
+
+        /* ❤️ HEARTBEAT */
+        case 'Heartbeat':
+          sendCallResult(ws, uid, {
+            currentTime: new Date().toISOString()
+          });
+          break;
+
+        /* 🔐 AUTORIZAÇÃO */
+        case 'Authorize':
+          sendCallResult(ws, uid, {
+            idTagInfo: {
+              status: 'Accepted'
+            }
+          });
+          break;
+
+        /* ⚡ INÍCIO DA TRANSAÇÃO */
+        case 'StartTransaction': {
+          const transactionId = transactionSeq++;
+
+          transactions.set(transactionId, {
+            connectorId: payload.connectorId,
+            idTag: payload.idTag,
+            meterStart: payload.meterStart,
+            startedAt: payload.timestamp
+          });
+
+          sendCallResult(ws, uid, {
+            transactionId,
+            idTagInfo: { status: 'Accepted' }
+          });
+          break;
         }
-      ]));
+
+        /* 📊 MEDIÇÕES */
+        case 'MeterValues':
+          // opcional: persistir valores
+          sendCallResult(ws, uid, {});
+          break;
+
+        /* ⛔ FIM DA TRANSAÇÃO */
+        case 'StopTransaction':
+          transactions.delete(payload.transactionId);
+
+          sendCallResult(ws, uid, {
+            idTagInfo: { status: 'Accepted' }
+          });
+          break;
+
+        /* 🔌 STATUS DO CONECTOR */
+        case 'StatusNotification':
+          chargers.set(ws, {
+            ...chargers.get(ws),
+            status: payload.status
+          });
+
+          sendCallResult(ws, uid, {});
+          break;
+
+        /* 🧩 DATA TRANSFER (vendor specific) */
+        case 'DataTransfer':
+          sendCallResult(ws, uid, {
+            status: 'Accepted',
+            data: payload.data || null
+          });
+          break;
+
+        /* ❓ AÇÃO DESCONHECIDA */
+        default:
+          console.warn('Ação OCPP não suportada:', action);
+          sendCallError(ws, uid, 'NotSupported', `Ação ${action} não suportada`);
+      }
+      break;
+    }
+
+    /* =========================
+       CALLRESULT (server ← charger)
+       ========================= */
+    case 3:
+      // Aqui você trata respostas a CALLs que VOCÊ enviou
+      console.log('CALLRESULT recebido:', uid, payload);
       break;
 
-    case 'Heartbeat':
-      ws.send(JSON.stringify([
-        3,
-        uid,
-        { currentTime: new Date().toISOString() }
-      ]));
+    /* =========================
+       CALLERROR
+       ========================= */
+    case 4: {
+      const [ , , errorCode, errorDescription ] = msg;
+      console.error('CALLERROR recebido:', errorCode, errorDescription);
       break;
-
-    case 'StartTransaction':
-      const transactionId = transactionSeq++;
-
-      transactions.set(transactionId, {
-        meterStart: payload.meterStart,
-        startedAt: payload.timestamp
-      });
-
-      ws.send(JSON.stringify([
-        3,
-        uid,
-        {
-          transactionId,
-          idTagInfo: { status: 'Accepted' }
-        }
-      ]));
-      break;
-
-    case 'StopTransaction':
-      transactions.delete(payload.transactionId);
-
-      ws.send(JSON.stringify([
-        3,
-        uid,
-        {
-          idTagInfo: { status: 'Accepted' }
-        }
-      ]));
-      break;
+    }
 
     default:
-      console.log('Ação OCPP não tratada:', action);
+      console.warn('Tipo OCPP desconhecido:', type);
   }
+}
+
+/* =========================
+   Helpers OCPP
+   ========================= */
+
+function sendCallResult(ws, uid, payload) {
+  ws.send(JSON.stringify([3, uid, payload]));
+}
+
+function sendCallError(ws, uid, code, description) {
+  ws.send(JSON.stringify([4, uid, code, description, {}]));
 }
 
 // === WEBSOCKET LIFECYCLE ===
