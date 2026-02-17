@@ -65,6 +65,26 @@ function handleOcppMessage(ws, raw) {
           sendCallResult(ws, uid, {
             currentTime: new Date().toISOString()
           });
+          const remoteStartId = uuidv4(); // uniqueId novo
+          const remoteStartId2 = uuidv4(); 
+          ws.send(JSON.stringify([
+            2,
+            remoteStartId2,
+            "RemoteStartTransaction",
+            {
+              connectorId: "2",
+              idTag: "123456"
+            }
+          ]));
+                    ws.send(JSON.stringify([
+            2,
+            remoteStartId,
+            "RemoteStartTransaction",
+            {
+              connectorId: 1,
+              idTag: "123456"
+            }
+          ]));
           break;
 
         /* 🔐 AUTORIZAÇÃO */
